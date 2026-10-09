@@ -37,6 +37,8 @@ const MATCHES_URL = "/api/matches";
 const MATCHES_LIMIT = 150;
 /** 翻几页。150 条里混着 15m / ETH / BNB，只留 BTC 5m 后剩得不多。 */
 const MATCHES_PAGES = 3;
+/** 查询单局完整成交时的分页保护上限。 */
+const FULL_MATCHES_PAGES = 50;
 /** 成交刷新间隔。150 条覆盖他约 2~3 分钟的活动，5 秒足够不漏。 */
 const MATCHES_INTERVAL_MS = 5_000;
 /**
@@ -156,6 +158,28 @@ type MatchRow = {
   hash: string;
 };
 
+type PairLeg = MatchRow;
+type PairSlice = {
+  key: string;
+  shares: number;
+  up: PairLeg;
+  down: PairLeg;
+};
+type PairGroup = {
+  key: string;
+  slug: string;
+  marketId: number | string;
+  latestAt: number;
+  upShares: number;
+  downShares: number;
+  pairedShares: number;
+  naked: number;
+  nakedSide: "UP" | "DOWN" | null;
+  pairCost: number | null;
+  pairs: PairSlice[];
+  residuals: PairLeg[];
+};
+
 /** 历史逐局（两腿配对后）。 */
 type HistoryRound = {
   key: string;
@@ -193,6 +217,30 @@ type Market = { id: number; categorySlug?: string; title?: string; tradingStatus
 function num(value: number | string | null | undefined): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+/** 成交数量统一保留两位；配对逻辑保持浏览器兼容，不依赖 BigInt。 */
+function formatTradeShares(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : "0.00";
+}
+
+/**
+ * 成交股数不能统一保留 1 位小数：FIFO 拆分后会出现小于 0.05 股的片段，
+ * 直接 `toFixed(1)` 会把它显示成 0.0，误导分析。大数保持紧凑，小数保留到足以
+ * 看见有效数量的精度。
+ */
+function formatShares(value: number): string {
+  if (!Number.isFinite(value) || Math.abs(value) < 0.0000005) return "0";
+  const absolute = Math.abs(value);
+  const decimals =
+    absolute >= 100 ? 0
+      : absolute >= 10 ? 1
+        : absolute >= 1 ? 2
+          : absolute >= 0.1 ? 3
+            : absolute >= 0.01 ? 4
+              : absolute >= 0.001 ? 5
+                : 6;
+  return value.toFixed(decimals).replace(/\.?(0+)$/, "");
 }
 
 function which(position: PredictPosition): "up" | "down" | null {
@@ -329,6 +377,77 @@ function parseMatches(payload: unknown): MatchRow[] {
   return out.sort((a, b) => b.at - a.at);
 }
 
+/**
+ * 逐笔成交只告诉我们各腿的成交，不会告诉我们钱包实际如何把两腿配成一组。
+ * 这里用时间先后做 FIFO 配对：新成交先消化另一边最早的未配数量，剩余数量留在队列。
+ * 这个结果用于分析展示，不能当作交易所的真实撮合关系。
+ */
+function pairMatches(rows: MatchRow[]): PairGroup[] {
+  const groups = new Map<string, MatchRow[]>();
+  for (const row of rows) {
+    const list = groups.get(row.slug) ?? [];
+    list.push(row);
+    groups.set(row.slug, list);
+  }
+  return [...groups.entries()]
+    .map(([slug, rawRows]) => {
+      const ordered = [...rawRows].sort((a, b) => a.at - b.at);
+      const upQueue: PairLeg[] = [];
+      const downQueue: PairLeg[] = [];
+      const pairs: PairSlice[] = [];
+      const upShares = ordered
+        .filter((row) => row.leg.toLowerCase().startsWith("up"))
+        .reduce((sum, row) => sum + row.shares, 0);
+      const downShares = ordered
+        .filter((row) => row.leg.toLowerCase().startsWith("down"))
+        .reduce((sum, row) => sum + row.shares, 0);
+      for (const row of ordered) {
+        let remaining = row.shares;
+        const opposite = row.leg.toLowerCase().startsWith("up") ? downQueue : upQueue;
+        while (remaining > 1e-8 && opposite.length > 0) {
+          const other = opposite[0]!;
+          const amount = Math.min(remaining, other.shares);
+          const up = row.leg.toLowerCase().startsWith("up")
+            ? { ...row, shares: amount }
+            : { ...other, shares: amount };
+          const down = row.leg.toLowerCase().startsWith("down")
+            ? { ...row, shares: amount }
+            : { ...other, shares: amount };
+          pairs.push({ key: `${row.at}:${row.hash}:${pairs.length}`, shares: amount, up, down });
+          remaining -= amount;
+          other.shares -= amount;
+          if (other.shares <= 1e-8) opposite.shift();
+        }
+        if (remaining > 1e-8) {
+          const queue = row.leg.toLowerCase().startsWith("up") ? upQueue : downQueue;
+          queue.push({ ...row, shares: remaining });
+        }
+      }
+      const pairedShares = Math.min(upShares, downShares);
+      const pairedCost = pairs.reduce((sum, pair) => sum + pair.shares * (pair.up.price + pair.down.price), 0);
+      return {
+        key: slug,
+        slug,
+        marketId: ordered[0]?.marketId ?? "?",
+        latestAt: Math.max(...ordered.map((row) => row.at)),
+        upShares,
+        downShares,
+        pairedShares,
+        naked: Math.abs(upShares - downShares),
+        nakedSide: upShares === downShares ? null : upShares > downShares ? "UP" : "DOWN",
+        pairCost: pairedShares > 0 ? pairedCost / pairedShares : null,
+        pairs,
+        residuals: [...upQueue, ...downQueue],
+      } satisfies PairGroup;
+    })
+    .sort((a, b) => b.latestAt - a.latestAt);
+}
+
+function matchMarketLabel(slug: string): string {
+  const slot = /-(\d{10})$/.exec(slug)?.[1];
+  return slot ? `BTC 5m · ${time(Number(slot) * 1000)}` : slug.replace(/^btc-updown-5m-/, "5m-").slice(0, 20);
+}
+
 /** 逐腿 → 逐局。`winner` 取 `outcomeWinner` 为真的那条腿。 */
 function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
   const groups = new Map<string, ClosedPosition[]>();
@@ -400,6 +519,11 @@ export function LeaderboardPage() {
   const [closed, setClosed] = useState<ClosedPosition[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [matchView, setMatchView] = useState<"paired" | "raw">("paired");
+  const [selectedRound, setSelectedRound] = useState<string | null>(null);
+  const [fullRoundMatches, setFullRoundMatches] = useState<MatchRow[]>([]);
+  const [fullRoundBusy, setFullRoundBusy] = useState(false);
+  const [fullRoundError, setFullRoundError] = useState<string | null>(null);
   const [updatedAt, setUpdatedAt] = useState(0);
 
   // 实时盘口（WS）
@@ -496,6 +620,42 @@ export function LeaderboardPage() {
       // 成交面板是补充信息，失败不影响持仓与盘口。
     }
   }, []);
+
+  /** 按单个市场翻完所有分页，供轮次卡片查看完整成交。 */
+  const loadFullRound = useCallback(async (group: PairGroup) => {
+    if (fullRoundBusy) return;
+    setSelectedRound(group.key);
+    setFullRoundBusy(true);
+    setFullRoundError(null);
+    setFullRoundMatches([]);
+    try {
+      const collected: MatchRow[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | null = null;
+      for (let page = 0; page < FULL_MATCHES_PAGES; page += 1) {
+        const query = new URLSearchParams({
+          signerAddress: WALLET_ADDRESS,
+          first: String(MATCHES_LIMIT),
+          marketId: String(group.marketId),
+        });
+        if (cursor) query.set("after", cursor);
+        const response = await fetch(`${MATCHES_URL}?${query.toString()}`, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = (await response.json()) as { cursor?: string };
+        collected.push(...parseMatches(payload).filter((row) => row.slug === group.slug));
+        const nextCursor = payload.cursor ?? null;
+        if (!nextCursor || seenCursors.has(nextCursor)) break;
+        seenCursors.add(nextCursor);
+        cursor = nextCursor;
+      }
+      setFullRoundMatches(collected);
+    } catch (cause) {
+      setFullRoundMatches([]);
+      setFullRoundError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setFullRoundBusy(false);
+    }
+  }, [fullRoundBusy]);
 
   /**
    * 拉他的**已结算**持仓（历史真实表现）。
@@ -721,17 +881,38 @@ export function LeaderboardPage() {
     };
   }, [history]);
 
+  const pairGroups = useMemo(() => pairMatches(matches), [matches]);
+  const fullRoundGroup = useMemo(
+    () => (selectedRound ? pairMatches(fullRoundMatches).find((group) => group.key === selectedRound) ?? null : null),
+    [selectedRound, fullRoundMatches],
+  );
+  const viewMatches = selectedRound && fullRoundMatches.length > 0 ? fullRoundMatches : matches;
+
   const matchStats = useMemo(() => {
-    const buy = matches.filter((row) => row.side.toLowerCase() === "bid");
+    const buy = viewMatches.filter((row) => row.side.toLowerCase() === "bid");
     const maker = buy.filter((row) => row.role === "MAKER").length;
-    const shares = matches.reduce((sum, row) => sum + row.shares, 0);
+    const shares = viewMatches.reduce((sum, row) => sum + row.shares, 0);
     return {
-      count: matches.length,
+      count: viewMatches.length,
       makerShare: buy.length ? maker / buy.length : 0,
       shares,
-      avgSize: matches.length ? shares / matches.length : 0,
+      avgSize: viewMatches.length ? shares / viewMatches.length : 0,
     };
-  }, [matches]);
+  }, [viewMatches]);
+  const pairStats = useMemo(() => {
+    const pairedShares = pairGroups.reduce((sum, group) => sum + group.pairedShares, 0);
+    const naked = pairGroups.reduce((sum, group) => sum + group.naked, 0);
+    const pairCostValue = pairGroups.reduce(
+      (sum, group) => sum + (group.pairCost ?? 0) * group.pairedShares,
+      0,
+    );
+    return {
+      rounds: pairGroups.length,
+      pairedShares,
+      naked,
+      pairCost: pairedShares > 0 ? pairCostValue / pairedShares : null,
+    };
+  }, [pairGroups]);
 
   const bookRows = useMemo(
     () =>
@@ -800,7 +981,7 @@ export function LeaderboardPage() {
           value={`${(totals.pairedPct * 100).toFixed(1)}%`}
           foot="2·min/(up+dn)；1 = 涨跌赔付完全相同"
         />
-        <Metric label="裸敞口" value={totals.naked.toFixed(1)} foot={`配对 ${totals.matched.toFixed(1)} 股`} />
+        <Metric label="裸敞口" value={formatShares(totals.naked)} foot={`配对 ${formatShares(totals.matched)} 股`} />
         <Metric
           label="配对成本 中位"
           value={totals.median === null ? "—" : totals.median.toFixed(4)}
@@ -852,7 +1033,7 @@ export function LeaderboardPage() {
                 </span>
                 <span className="mono">
                   {row.up ? (
-                    `涨 ${row.up.shares.toFixed(1)} @ ${row.up.avg.toFixed(4)}`
+                    `涨 ${formatShares(row.up.shares)} @ ${row.up.avg.toFixed(4)}`
                   ) : (
                     <span className="negative" title="这一腿没有持仓：开盘瞬间可能只成交了一边">
                       无
@@ -861,7 +1042,7 @@ export function LeaderboardPage() {
                 </span>
                 <span className="mono">
                   {row.down ? (
-                    `跌 ${row.down.shares.toFixed(1)} @ ${row.down.avg.toFixed(4)}`
+                    `跌 ${formatShares(row.down.shares)} @ ${row.down.avg.toFixed(4)}`
                   ) : (
                     <span className="negative" title="这一腿没有持仓：开盘瞬间可能只成交了一边">
                       无
@@ -879,7 +1060,7 @@ export function LeaderboardPage() {
                 </span>
                 <span className="mono strong">{(row.pairedPct * 100).toFixed(1)}%</span>
                 <span className={`mono ${row.naked > 0 ? "negative" : ""}`}>
-                  {row.naked.toFixed(1)}
+                  {formatShares(row.naked)}
                 </span>
                 <span className="mono">
                   {row.pairCost === null ? "—" : row.pairCost.toFixed(4)}
@@ -971,15 +1152,96 @@ export function LeaderboardPage() {
       </Panel>
 
       <Panel
-        title={`他的 BTC 5m 逐笔成交（最近 ${matches.length} 笔）`}
+        title={"他的 BTC 5m 逐笔成交（" + viewMatches.length + " 笔）"}
         aside={
-          <span className="small">
-            maker 占 {(matchStats.makerShare * 100).toFixed(0)}% · 笔均 {matchStats.avgSize.toFixed(1)} 股
-          </span>
+          <div className="match-panel-aside">
+              <span className="small">
+              挂单占 {(matchStats.makerShare * 100).toFixed(0)}% · 笔均 {formatShares(matchStats.avgSize)} 股
+            </span>
+            <div className="match-switch" role="group" aria-label="成交展示方式">
+              <button type="button" className={matchView === "paired" ? "active" : ""} onClick={() => setMatchView("paired")}>
+                配对分析
+              </button>
+              <button type="button" className={matchView === "raw" ? "active" : ""} onClick={() => setMatchView("raw")}>
+                原始逐笔
+              </button>
+            </div>
+          </div>
         }
       >
         {matches.length === 0 ? (
           <div className="small" style={{ padding: 16 }}>等待成交记录…</div>
+        ) : matchView === "paired" ? (
+          <div className="pair-analysis">
+            <div className="pair-summary-strip" aria-live="polite">
+              <span><small>涉及轮次</small><strong>{pairStats.rounds}</strong></span>
+              <span><small>FIFO 已配对</small><strong>{formatTradeShares(pairStats.pairedShares)} 股</strong></span>
+              <span className={pairStats.naked > 0 ? "warning" : ""}><small>未配对敞口</small><strong>{formatTradeShares(pairStats.naked)} 股</strong></span>
+              <span><small>配对均价</small><strong>{pairStats.pairCost === null ? "—" : pairStats.pairCost.toFixed(4)}</strong></span>
+            </div>
+            <p className="pair-note">
+              配对分析按同一 BTC 5m 轮次、时间先后 FIFO 估算；它能看出涨跌数量如何抵消，但成交接口没有提供钱包真实的配对意图。
+            </p>
+            <div className="pair-groups">
+              {pairGroups.map((group) => {
+                const showingFull = selectedRound === group.key && fullRoundGroup !== null;
+                const displayGroup = showingFull ? fullRoundGroup : group;
+                const displayPairs = showingFull ? displayGroup.pairs : displayGroup.pairs.slice(0, 80);
+                return (
+                <section className="match-round" key={group.key}>
+                  <header className="match-round-head">
+                    <div>
+                      <strong>{matchMarketLabel(displayGroup.slug)}</strong>
+                      <span className="small">最近成交 {time(displayGroup.latestAt)}</span>
+                    </div>
+                    <div className="match-round-metrics">
+                      <span>涨 <b>{formatTradeShares(displayGroup.upShares)}</b></span>
+                      <span>跌 <b>{formatTradeShares(displayGroup.downShares)}</b></span>
+                      <span className={displayGroup.naked > 0 ? "warning" : ""}>裸敞口 <b>{formatTradeShares(displayGroup.naked)}</b></span>
+                    </div>
+                    <div className="match-round-tools">
+                      {showingFull && <span className="small">完整 {fullRoundMatches.length} 笔</span>}
+                      <button type="button" onClick={() => void loadFullRound(group)} disabled={fullRoundBusy}>
+                        {selectedRound === group.key && fullRoundBusy ? "查询中…" : showingFull ? "重新查询" : "查询完整"}
+                      </button>
+                    </div>
+                  </header>
+                  {selectedRound === group.key && fullRoundError && <div className="pair-load-error">完整成交查询失败：{fullRoundError}</div>}
+                  <div className="pair-column-head">
+                    <span>涨 UP 成交</span>
+                    <span>FIFO 配对</span>
+                    <span>跌 DOWN 成交</span>
+                  </div>
+                  {displayPairs.map((pair) => (
+                    <div className="pair-line" key={pair.key}>
+                      <div className="pair-fill up">
+                        <span className="fill-arrow">↗</span>
+                        <div><strong>{formatTradeShares(pair.shares)} 股 @ {pair.up.price.toFixed(3)}</strong><small>{time(pair.up.at)} · {pair.up.role === "MAKER" ? "挂单" : "吃单"}</small></div>
+                      </div>
+                      <div className="pair-link">
+                        <strong>{formatTradeShares(pair.shares)}</strong>
+                        <small>配对</small>
+                        <span>成本 {(pair.up.price + pair.down.price).toFixed(3)}</span>
+                      </div>
+                      <div className="pair-fill down">
+                        <span className="fill-arrow">↘</span>
+                        <div><strong>{formatTradeShares(pair.shares)} 股 @ {pair.down.price.toFixed(3)}</strong><small>{time(pair.down.at)} · {pair.down.role === "MAKER" ? "挂单" : "吃单"}</small></div>
+                      </div>
+                    </div>
+                  ))}
+                  {!showingFull && group.pairs.length > 80 && <div className="pair-more">当前显示前 80 组；点击“查询完整”加载该轮全部成交。</div>}
+                  {displayGroup.naked > 0 && (
+                    <div className={"pair-residual " + (displayGroup.nakedSide === "UP" ? "up" : "down")}>
+                      <span className="fill-arrow">{displayGroup.nakedSide === "UP" ? "↗" : "↘"}</span>
+                      <strong>未配对 {formatTradeShares(displayGroup.naked)} 股</strong>
+                      <span>当前偏{displayGroup.nakedSide === "UP" ? "涨" : "跌"}，这部分是该轮剩余方向敞口</span>
+                    </div>
+                  )}
+                </section>
+                );
+              })}
+            </div>
+          </div>
         ) : (
           <div className="ws-trades">
             <div className="ws-trade head">
@@ -991,8 +1253,8 @@ export function LeaderboardPage() {
               <span>角色</span>
               <span>订单</span>
             </div>
-            {matches.slice(0, 120).map((row, index) => (
-              <div className="ws-trade" key={`${row.at}:${row.hash}:${index}`}>
+            {viewMatches.map((row, index) => (
+              <div className="ws-trade" key={row.at + ":" + row.hash + ":" + index}>
                 <span className="small">{time(row.at)}</span>
                 <span className="mono small" title={row.slug}>
                   {row.slug.replace(/^btc-updown-5m-/, "5m-").slice(0, 16)}
@@ -1003,7 +1265,7 @@ export function LeaderboardPage() {
                   </Badge>
                 </span>
                 <span className="mono strong">{row.price.toFixed(3)}</span>
-                <span className="mono">{row.shares.toFixed(1)}</span>
+                <span className="mono">{formatTradeShares(row.shares)}</span>
                 <span>
                   <Badge tone={row.role === "MAKER" ? "green" : "red"}>
                     {row.role === "MAKER" ? "挂单" : "吃单"}
