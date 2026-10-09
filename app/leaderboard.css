@@ -1,0 +1,168 @@
+.leaderboard-page {
+  gap: 18px;
+}
+
+.leaderboard-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.leaderboard-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-inset);
+}
+
+.leaderboard-address {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.leaderboard-meta .badge {
+  gap: 5px;
+  flex-shrink: 0;
+}
+
+.leaderboard-metrics {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.leaderboard-page .panel {
+  overflow: hidden;
+}
+
+@media (max-width: 1100px) {
+  .leaderboard-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .leaderboard-meta {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .leaderboard-address {
+    flex-basis: 100%;
+  }
+
+  .leaderboard-actions {
+    width: 100%;
+    justify-content: flex-start;
+  }
+
+  .leaderboard-actions .button {
+    flex: 1 1 auto;
+  }
+
+  .leaderboard-metrics {
+    gap: 8px;
+  }
+
+  .leaderboard-metrics .metric {
+    padding: 12px;
+  }
+}
+
+/* ─────────────── 纯 WS 市场监控 ─────────────── */
+
+.ws-monitor {
+  display: flex;
+  flex-direction: column;
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-monitor-row {
+  display: grid;
+  grid-template-columns: 1.2fr 0.7fr 0.7fr 0.7fr 0.9fr 0.9fr 1.6fr 0.8fr;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line, rgba(127, 127, 127, 0.16));
+}
+
+.ws-monitor-row:last-child {
+  border-bottom: none;
+}
+
+.ws-monitor-row.head {
+  font-size: 12px;
+  opacity: 0.62;
+  border-bottom-width: 2px;
+  position: sticky;
+  top: 0;
+  backdrop-filter: blur(6px);
+}
+
+.ws-monitor-row .strong {
+  font-weight: 600;
+}
+
+.ws-trades {
+  display: flex;
+  flex-direction: column;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.ws-trade {
+  display: grid;
+  grid-template-columns: auto 1.2fr 0.7fr auto 1fr;
+  gap: 12px;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line, rgba(127, 127, 127, 0.12));
+  font-variant-numeric: tabular-nums;
+}
+
+.ws-trade:last-child {
+  border-bottom: none;
+}
+
+@media (max-width: 900px) {
+  .ws-monitor-row {
+    grid-template-columns: 1.2fr 0.7fr 0.7fr 0.9fr 0.8fr;
+  }
+
+  /* 盘口表：藏「偏重」和「配对成本」。 */
+  .ws-monitor:not(.holdings) .ws-monitor-row > :nth-child(4),
+  .ws-monitor:not(.holdings) .ws-monitor-row > :nth-child(7) {
+    display: none;
+  }
+
+  /* 持仓表是 9 列，列序不同：藏「偏重」(5) 和「配对成本」(8)，保住价格与裸敞口。 */
+  .ws-monitor.holdings .ws-monitor-row {
+    grid-template-columns: 1.4fr 0.9fr 1.2fr 1.2fr 0.7fr 0.8fr 0.8fr;
+  }
+
+  .ws-monitor.holdings .ws-monitor-row > :nth-child(5),
+  .ws-monitor.holdings .ws-monitor-row > :nth-child(8) {
+    display: none;
+  }
+}
+
+/* 持仓表比盘口表多一列「状态」（9 列） */
+.ws-monitor.holdings .ws-monitor-row {
+  grid-template-columns: 1.5fr 0.9fr 1.4fr 1.4fr 0.7fr 0.7fr 0.8fr 0.9fr 0.8fr;
+}
+
+/* 逐笔成交表比默认多两列 */
+.ws-trade.head {
+  font-size: 12px;
+  opacity: 0.62;
+  border-bottom-width: 2px;
+}
+.ws-trades .ws-trade {
+  grid-template-columns: auto 1.1fr 0.5fr 0.7fr 0.7fr 0.6fr 0.7fr;
+}
