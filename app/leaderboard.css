@@ -37,12 +37,24 @@
   margin-bottom: 0;
 }
 
+.leaderboard-metrics.imbalance-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.imbalance-note {
+  margin-top: 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
 .leaderboard-page .panel {
   overflow: hidden;
 }
 
 @media (max-width: 1100px) {
-  .leaderboard-metrics {
+  .leaderboard-metrics,
+  .leaderboard-metrics.imbalance-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -130,6 +142,19 @@
   border-bottom: none;
 }
 
+.ws-monitor.current-holdings .ws-monitor-row {
+  grid-template-columns: 1.5fr 0.9fr 1.4fr 1.4fr 0.7fr 0.7fr 0.7fr 0.8fr 0.9fr 0.8fr;
+}
+
+.ws-monitor.historical-holdings .ws-monitor-row {
+  grid-template-columns: 1.5fr 1fr 1fr 0.7fr 0.7fr 0.9fr 0.8fr 0.9fr 0.8fr;
+}
+
+.ws-monitor.holdings .ws-monitor-row > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 900px) {
   .ws-monitor-row {
     grid-template-columns: 1.2fr 0.7fr 0.7fr 0.9fr 0.8fr;
@@ -141,20 +166,18 @@
     display: none;
   }
 
-  /* 持仓表是 9 列，列序不同：藏「偏重」(5) 和「配对成本」(8)，保住价格与裸敞口。 */
-  .ws-monitor.holdings .ws-monitor-row {
-    grid-template-columns: 1.4fr 0.9fr 1.2fr 1.2fr 0.7fr 0.8fr 0.8fr;
+  .ws-monitor.current-holdings .ws-monitor-row {
+    grid-template-columns: 1.4fr 0.9fr 1.2fr 1.2fr 0.7fr 0.7fr 0.8fr 0.8fr;
   }
 
-  .ws-monitor.holdings .ws-monitor-row > :nth-child(5),
-  .ws-monitor.holdings .ws-monitor-row > :nth-child(8) {
+  .ws-monitor.historical-holdings .ws-monitor-row {
+    grid-template-columns: 1.4fr 1fr 1fr 0.7fr 0.7fr 0.9fr 0.8fr 0.8fr;
+  }
+
+  .ws-monitor.holdings .holdings-direction,
+  .ws-monitor.holdings .holdings-cost {
     display: none;
   }
-}
-
-/* 持仓表比盘口表多一列「状态」（9 列） */
-.ws-monitor.holdings .ws-monitor-row {
-  grid-template-columns: 1.5fr 0.9fr 1.4fr 1.4fr 0.7fr 0.7fr 0.8fr 0.9fr 0.8fr;
 }
 
 /* 逐笔成交表比默认多两列 */
@@ -219,7 +242,7 @@
 .match-round-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px; border-bottom: 1px solid var(--border); }
 .match-round-head > div:first-child { display: grid; gap: 4px; min-width: 0; }
 .match-round-head > div:first-child strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.match-round-metrics { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 11px; white-space: nowrap; }
+.match-round-metrics { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; color: var(--muted); font-size: 11px; white-space: nowrap; }
 .match-round-metrics b { color: var(--foreground); font-family: var(--font-mono); font-weight: 600; }
 .match-round-tools { display: flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
 .match-round-tools button { border: 1px solid var(--border); border-radius: 5px; padding: 5px 8px; color: var(--foreground); background: #19191f; font-size: 10px; }
@@ -302,7 +325,7 @@
   font-size: 10px;
 }
 .round-replay-detail b, .round-replay-summary b { color: var(--foreground); font-family: var(--font-mono); font-weight: 600; }
-.round-replay-summary { display: flex; align-items: center; gap: 14px; margin-top: 8px; color: var(--muted); font-size: 10px; }
+.round-replay-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 14px; margin-top: 8px; color: var(--muted); font-size: 10px; }
 @media (max-width: 760px) {
   .match-panel-aside { width: 100%; justify-content: flex-start; }
   .history-round-picker { width: 100%; }
@@ -423,20 +446,21 @@
   .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(3)::before { content: "UP"; }
   .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(4)::before { content: "DOWN"; }
   .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(5)::before { content: "偏重"; }
-  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "配对"; }
-  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "裸敞口"; }
-  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "成本"; }
-  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(9)::before { content: "盈亏"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "失衡率"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "配对"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "裸敞口"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(9)::before { content: "成本"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(10)::before { content: "盈亏"; }
   .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(1)::before { content: "时间"; }
   .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(2)::before { content: "UP 均价"; }
   .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(3)::before { content: "DOWN 均价"; }
   .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(4)::before { content: "结果"; }
   .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(5)::before { content: "配对"; }
-  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "裸敞口"; }
-  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "成本"; }
-  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "盈亏"; }
-  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(9),
-  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(8) { grid-column: 1 / -1; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "买入失衡率"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "裸敞口"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "成本"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(9)::before { content: "盈亏"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(9) { grid-column: 1 / -1; }
 
   .ws-monitor:not(.holdings) { overflow-x: auto; }
   .ws-monitor:not(.holdings) .ws-monitor-row { min-width: 600px; }

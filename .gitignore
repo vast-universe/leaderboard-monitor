@@ -4,3 +4,6 @@ out/
 .env*
 !.env.example
 *.tsbuildinfo
+
+# 盘口采集器的落盘目录：体积大且随时在增长，不入库。
+data/

@@ -615,21 +615,6 @@ body:has(.ui-dialog[open]) {
   .ws-monitor:not(.holdings) .ws-monitor-row > :nth-child(7) {
     display: none;
   }
-
-  /* 持仓表是 9 列，列序不同：藏「偏重」(5) 和「配对成本」(8)，保住价格与裸敞口。 */
-  .ws-monitor.holdings .ws-monitor-row {
-    grid-template-columns: 1.4fr 0.9fr 1.2fr 1.2fr 0.7fr 0.8fr 0.8fr;
-  }
-
-  .ws-monitor.holdings .ws-monitor-row > :nth-child(5),
-  .ws-monitor.holdings .ws-monitor-row > :nth-child(8) {
-    display: none;
-  }
-}
-
-/* 持仓表比盘口表多一列「状态」（9 列） */
-.ws-monitor.holdings .ws-monitor-row {
-  grid-template-columns: 1.5fr 0.9fr 1.4fr 1.4fr 0.7fr 0.7fr 0.8fr 0.9fr 0.8fr;
 }
 
 /* 逐笔成交表比默认多两列 */

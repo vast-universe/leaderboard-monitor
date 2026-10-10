@@ -120,6 +120,7 @@ type Paired = {
   matched: number;
   naked: number;
   pairedPct: number;
+  imbalance: number | null;
   pairCost: number | null;
   pnl: number;
   size: number;
@@ -174,6 +175,7 @@ type PairGroup = {
   downShares: number;
   pairedShares: number;
   naked: number;
+  imbalance: number | null;
   nakedSide: "UP" | "DOWN" | null;
   pairCost: number | null;
   pairs: PairSlice[];
@@ -192,6 +194,8 @@ type HistoryRound = {
   matched: number;
   naked: number;
   pairedPct: number;
+  /** 按累计买入份额计算；缺腿或缺份额数据时不推断为单边持仓。 */
+  imbalance: number | null;
   pairCost: number | null;
   pnl: number;
   winner: "UP" | "DOWN" | null;
@@ -232,6 +236,17 @@ function num(value: number | string | null | undefined): number {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
+/** 与 Taurus 风险指标一致：|UP−DOWN| / max(UP, DOWN)。无仓位时不显示百分比。 */
+function shareImbalance(up: number, down: number): number | null {
+  if (!Number.isFinite(up) || !Number.isFinite(down) || up < 0 || down < 0) return null;
+  const biggest = Math.max(up, down);
+  return biggest > 0 ? Math.abs(up - down) / biggest : null;
+}
+
+function formatImbalance(value: number | null): string {
+  return value === null ? "—" : `${(value * 100).toFixed(1)}%`;
+}
+
 /** 成交数量统一保留两位；配对逻辑保持浏览器兼容，不依赖 BigInt。 */
 function formatTradeShares(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : "0.00";
@@ -253,7 +268,8 @@ function formatShares(value: number): string {
             : absolute >= 0.01 ? 4
               : absolute >= 0.001 ? 5
                 : 6;
-  return value.toFixed(decimals).replace(/\.?(0+)$/, "");
+  const formatted = value.toFixed(decimals);
+  return decimals > 0 ? formatted.replace(/\.?0+$/, "") : formatted;
 }
 
 function which(position: PredictPosition): "up" | "down" | null {
@@ -305,6 +321,7 @@ function pairOf(positions: PredictPosition[]): Paired[] {
       matched,
       naked: Math.abs(upShares - downShares),
       pairedPct: biggest > 0 ? (2 * matched) / (upShares + downShares) : 0,
+      imbalance: shareImbalance(upShares, downShares),
       pairCost:
         up && down && up.avg > 0 && down.avg > 0 ? up.avg + down.avg : null,
       pnl: (up?.pnl ?? 0) + (down?.pnl ?? 0),
@@ -483,6 +500,7 @@ function pairMatches(rows: MatchRow[]): PairGroup[] {
         downShares,
         pairedShares,
         naked: Math.abs(upShares - downShares),
+        imbalance: shareImbalance(upShares, downShares),
         nakedSide: upShares === downShares ? null : upShares > downShares ? "UP" : "DOWN",
         pairCost: pairedShares > 0 ? pairedCost / pairedShares : null,
         pairs,
@@ -522,7 +540,7 @@ function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
       if (name.startsWith("up")) up = leg;
       else if (name.startsWith("down")) down = leg;
     }
-    const upShares = num(up?.totalBoughtShares ?? up?.avgPrice);
+    const upShares = num(up?.totalBoughtShares);
     const downShares = num(down?.totalBoughtShares);
     const upBought = upShares;
     const downBought = downShares;
@@ -547,6 +565,10 @@ function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
       matched,
       naked: Math.abs(upBought - downBought),
       pairedPct: biggest > 0 ? (2 * matched) / (upBought + downBought) : 0,
+      imbalance: shareImbalance(
+        up?.totalBoughtShares == null || String(up.totalBoughtShares).trim() === "" ? NaN : Number(up.totalBoughtShares),
+        down?.totalBoughtShares == null || String(down.totalBoughtShares).trim() === "" ? NaN : Number(down.totalBoughtShares),
+      ),
       pairCost: upAvg > 0 && downAvg > 0 ? upAvg + downAvg : null,
       pnl: num(up?.pnl) + num(down?.pnl),
       winner,
@@ -666,7 +688,7 @@ function RoundReplayChart({ rows, slug }: { rows: MatchRow[]; slug: string }) {
             <g key={point.key} onMouseEnter={() => setHovered(point)} onFocus={() => setHovered(point)} tabIndex={0}>
               <circle className={`replay-event ${point.leg.toLowerCase()}`} cx={x(point.elapsed)} cy={yShares(point.leg === "UP" ? point.up : point.down)} r={2.8} />
               <circle className="replay-price-event" cx={x(point.elapsed)} cy={yPrice(point.price)} r={2.3} />
-              <title>{`${formatElapsed(point.elapsed)} · ${point.leg} ${formatShares(point.shares)} 股 · 价格 ${formatPrice(point.price)} · 持仓 ${formatShares(point.up)} / ${formatShares(point.down)}`}</title>
+              <title>{`${formatElapsed(point.elapsed)} · ${point.leg} ${formatShares(point.shares)} 股 · 价格 ${formatPrice(point.price)} · 持仓 ${formatShares(point.up)} / ${formatShares(point.down)} · 失衡 ${formatImbalance(shareImbalance(point.up, point.down))}`}</title>
             </g>
           ))}
           <g className="replay-axis-labels">
@@ -688,6 +710,7 @@ function RoundReplayChart({ rows, slug }: { rows: MatchRow[]; slug: string }) {
             <span className={hovered.leg === "UP" ? "positive" : "negative"}>{hovered.leg} 成交 {formatShares(hovered.shares)} 股</span>
             <span>价格 <b>{formatPrice(hovered.price)}</b></span>
             <span>持仓 <b>{formatShares(hovered.up)} / {formatShares(hovered.down)}</b></span>
+            <span>失衡 <b>{formatImbalance(shareImbalance(hovered.up, hovered.down))}</b></span>
             <span>{hovered.role === "MAKER" ? "挂单" : "吃单"}</span>
           </>
         ) : (
@@ -697,6 +720,7 @@ function RoundReplayChart({ rows, slug }: { rows: MatchRow[]; slug: string }) {
       <div className="round-replay-summary">
         <span>结束持仓 <b>{formatShares(last.up)} / {formatShares(last.down)}</b></span>
         <span>结束价格 <b>{formatPrice(last.price)}</b></span>
+        <span>末笔失衡 <b>{formatImbalance(shareImbalance(last.up, last.down))}</b></span>
         <span>成交点 <b>{points.length - 1}</b></span>
       </div>
     </div>
@@ -1046,7 +1070,9 @@ export function LeaderboardPage() {
       ? [...costs].sort((a, b) => a - b)[Math.floor(costs.length / 2)]!
       : null;
     const pairedPct = matched + naked > 0 ? (2 * matched) / (2 * matched + naked) : 0;
-    return { pnl, matched, naked, median, pairedPct, count: rounds.length };
+    // 各局的裸敞口分别累加，避免不同市场的反向偏重互相抵消。
+    const imbalance = matched + naked > 0 ? naked / (matched + naked) : null;
+    return { pnl, matched, naked, median, pairedPct, imbalance, count: rounds.length };
   }, [rounds]);
 
   const history = useMemo(() => historyRounds(closed), [closed]);
@@ -1058,6 +1084,11 @@ export function LeaderboardPage() {
       .filter((value): value is number => value !== null);
     const sorted = [...costs].sort((a, b) => a - b);
     const pnl = settled.reduce((sum, row) => sum + row.pnl, 0);
+    const imbalances = history
+      .map((row) => row.imbalance)
+      .filter((value): value is number => value !== null)
+      .sort((a, b) => a - b);
+    const midpoint = Math.floor(imbalances.length / 2);
     return {
       count: settled.length,
       pnl,
@@ -1065,6 +1096,12 @@ export function LeaderboardPage() {
         ? settled.filter((row) => row.pnl > 0).length / settled.length
         : 0,
       medianCost: sorted.length ? sorted[Math.floor(sorted.length / 2)]! : null,
+      medianImbalance: imbalances.length
+        ? imbalances.length % 2 === 0
+          ? (imbalances[midpoint - 1]! + imbalances[midpoint]!) / 2
+          : imbalances[midpoint]!
+        : null,
+      imbalanceCount: imbalances.length,
       medianPaired: settled.length
         ? [...settled.map((row) => row.pairedPct)].sort((a, b) => a - b)[
             Math.floor(settled.length / 2)
@@ -1175,7 +1212,12 @@ export function LeaderboardPage() {
         </div>
       )}
 
-      <div className="metrics leaderboard-metrics">
+      <div className="metrics leaderboard-metrics imbalance-metrics">
+        <Metric
+          label="当前持仓失衡率"
+          value={formatImbalance(totals.imbalance)}
+          foot="按各局较大侧份额加权，跨局不抵消"
+        />
         <Metric
           label="配对份额"
           value={`${(totals.pairedPct * 100).toFixed(1)}%`}
@@ -1205,16 +1247,17 @@ export function LeaderboardPage() {
             {positionError ? "持仓拉取失败" : "等待持仓数据…"}
           </div>
         ) : (
-          <div className="ws-monitor holdings" role="table" aria-label="他的持仓">
+          <div className="ws-monitor holdings current-holdings" role="table" aria-label="他的持仓">
             <div className="ws-monitor-row head" role="row">
               <span>市场</span>
               <span>状态</span>
               <span>UP 持仓</span>
               <span>DOWN 持仓</span>
-              <span>偏重</span>
+              <span className="holdings-direction">偏重</span>
+              <span title="|UP−DOWN| / max(UP, DOWN)">失衡率</span>
               <span>配对%</span>
               <span>裸敞口</span>
-              <span>配对成本</span>
+              <span className="holdings-cost">配对成本</span>
               <span>盈亏</span>
             </div>
             {rounds.map((row) => (
@@ -1249,7 +1292,7 @@ export function LeaderboardPage() {
                     </span>
                   )}
                 </span>
-                <span>
+                <span className="holdings-direction">
                   {row.heavy ? (
                     <Badge tone={row.heavy === "UP" ? "green" : "red"}>
                       {row.heavy === "UP" ? "偏涨" : "偏跌"}
@@ -1258,11 +1301,12 @@ export function LeaderboardPage() {
                     <Badge tone="green">持平</Badge>
                   )}
                 </span>
+                <span className="mono strong">{formatImbalance(row.imbalance)}</span>
                 <span className="mono strong">{(row.pairedPct * 100).toFixed(1)}%</span>
                 <span className={`mono ${row.naked > 0 ? "negative" : ""}`}>
                   {formatShares(row.naked)}
                 </span>
-                <span className="mono">
+                <span className="mono holdings-cost">
                   {row.pairCost === null ? "—" : row.pairCost.toFixed(4)}
                 </span>
                 <span className={`mono ${row.pnl >= 0 ? "positive" : "negative"}`}>
@@ -1272,9 +1316,15 @@ export function LeaderboardPage() {
             ))}
           </div>
         )}
+        <p className="imbalance-note">失衡率 = |UP − DOWN| ÷ 较大侧份额；0% 表示配平，100% 表示单边，无持仓显示 —。</p>
       </Panel>
 
-      <div className="metrics leaderboard-metrics">
+      <div className="metrics leaderboard-metrics imbalance-metrics">
+        <Metric
+          label="历史买入失衡率 中位"
+          value={formatImbalance(historyStats.medianImbalance)}
+          foot={`累计买入份额口径 · ${historyStats.imbalanceCount} 局数据完整`}
+        />
         <Metric
           label="历史真实盈亏"
           value={`${historyStats.pnl >= 0 ? "+" : ""}${historyStats.pnl.toFixed(0)}`}
@@ -1310,15 +1360,16 @@ export function LeaderboardPage() {
             {historyBusy ? "正在拉取历史…" : "暂无历史数据"}
           </div>
         ) : (
-          <div className="ws-monitor holdings" role="table" aria-label="历史真实表现">
+          <div className="ws-monitor holdings historical-holdings" role="table" aria-label="历史真实表现">
             <div className="ws-monitor-row head" role="row">
               <span>时间</span>
               <span>UP 均价</span>
               <span>DOWN 均价</span>
               <span>结果</span>
               <span>配对%</span>
+              <span>买入失衡率</span>
               <span>裸敞口</span>
-              <span>配对成本</span>
+              <span className="holdings-cost">配对成本</span>
               <span>盈亏</span>
             </div>
             {history.slice(0, 40).map((row) => (
@@ -1338,8 +1389,9 @@ export function LeaderboardPage() {
                   )}
                 </span>
                 <span className="mono strong">{(row.pairedPct * 100).toFixed(1)}%</span>
+                <span className="mono strong">{formatImbalance(row.imbalance)}</span>
                 <span className="mono">{row.naked.toFixed(0)}</span>
-                <span className="mono">
+                <span className="mono holdings-cost">
                   {row.pairCost === null ? "—" : row.pairCost.toFixed(4)}
                 </span>
                 <span className={`mono ${row.pnl >= 0 ? "positive" : "negative"}`}>
@@ -1349,6 +1401,7 @@ export function LeaderboardPage() {
             ))}
           </div>
         )}
+        <p className="imbalance-note">历史失衡率按两腿累计买入份额计算，未扣除卖出或赎回；缺腿、缺份额或无买入时显示 —，不计入中位数。</p>
       </Panel>
 
       <Panel
@@ -1407,6 +1460,7 @@ export function LeaderboardPage() {
             </div>
             <p className="pair-note">
               配对分析按同一 BTC 5m 轮次、时间先后 FIFO 估算；它能看出涨跌数量如何抵消，但成交接口没有提供钱包真实的配对意图。
+              成交失衡仅按已加载成交的两腿数量计算，回放显示各成交时刻的失衡率。
             </p>
             <div className="pair-groups">
               {displayPairGroups.map((group) => {
@@ -1423,6 +1477,7 @@ export function LeaderboardPage() {
                     <div className="match-round-metrics">
                       <span>涨 <b>{formatTradeShares(displayGroup.upShares)}</b></span>
                       <span>跌 <b>{formatTradeShares(displayGroup.downShares)}</b></span>
+                      <span>成交失衡 <b>{formatImbalance(displayGroup.imbalance)}</b></span>
                       <span className={displayGroup.naked > 0 ? "warning" : ""}>裸敞口 <b>{formatTradeShares(displayGroup.naked)}</b></span>
                     </div>
                     <div className="match-round-tools">
