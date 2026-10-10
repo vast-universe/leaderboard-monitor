@@ -27,6 +27,7 @@ pnpm dev:lan
 
 - `/api/positions`：目标钱包当前持仓
 - `/api/matches`：目标钱包最近成交
+- `/api/category`：把历史 BTC 5m 轮次 slug 解析成 predict.fun 市场 id
 - `/api/history`：Binance 已结算持仓
 - `wss://ws.predict.fun/ws`：盘口和实时成交推送
 # leaderboard-monitor

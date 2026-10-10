@@ -184,6 +184,7 @@ type PairGroup = {
 type HistoryRound = {
   key: string;
   title: string;
+  predictSlug: string | null;
   up: number;
   down: number;
   upAvg: number;
@@ -198,6 +199,18 @@ type HistoryRound = {
 };
 
 type Level = [number, number];
+
+type ReplayPoint = {
+  key: string;
+  at: number;
+  elapsed: number;
+  up: number;
+  down: number;
+  price: number;
+  leg: "UP" | "DOWN";
+  shares: number;
+  role: MatchRow["role"];
+};
 
 type BookData = {
   marketId: number;
@@ -377,6 +390,42 @@ function parseMatches(payload: unknown): MatchRow[] {
   return out.sort((a, b) => b.at - a.at);
 }
 
+async function resolvePredictMarketId(slug: string): Promise<number> {
+  const query = new URLSearchParams({ slug });
+  const response = await fetch(`/api/category?${query.toString()}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(`轮次元数据 HTTP ${response.status}`);
+  const payload = (await response.json()) as {
+    data?: { markets?: { id?: number | string; categorySlug?: string | null }[] | null } | null;
+  };
+  const market = (payload.data?.markets ?? []).find((row) => row.categorySlug === slug) ?? payload.data?.markets?.[0];
+  const marketId = Number(market?.id);
+  if (!Number.isInteger(marketId) || marketId <= 0) throw new Error("找不到该历史轮次的 predict 市场");
+  return marketId;
+}
+
+async function fetchCompleteRoundMatches(slug: string, marketId: number | string): Promise<MatchRow[]> {
+  const collected: MatchRow[] = [];
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+  for (let page = 0; page < FULL_MATCHES_PAGES; page += 1) {
+    const query = new URLSearchParams({
+      signerAddress: WALLET_ADDRESS,
+      first: String(MATCHES_LIMIT),
+      marketId: String(marketId),
+    });
+    if (cursor) query.set("after", cursor);
+    const response = await fetch(`${MATCHES_URL}?${query.toString()}`, { cache: "no-store" });
+    if (!response.ok) throw new Error(`成交接口 HTTP ${response.status}`);
+    const payload = (await response.json()) as { cursor?: string };
+    collected.push(...parseMatches(payload).filter((row) => row.slug === slug));
+    const nextCursor = payload.cursor ?? null;
+    if (!nextCursor || seenCursors.has(nextCursor)) break;
+    seenCursors.add(nextCursor);
+    cursor = nextCursor;
+  }
+  return collected;
+}
+
 /**
  * 逐笔成交只告诉我们各腿的成交，不会告诉我们钱包实际如何把两腿配成一组。
  * 这里用时间先后做 FIFO 配对：新成交先消化另一边最早的未配数量，剩余数量留在队列。
@@ -448,6 +497,12 @@ function matchMarketLabel(slug: string): string {
   return slot ? `BTC 5m · ${time(Number(slot) * 1000)}` : slug.replace(/^btc-updown-5m-/, "5m-").slice(0, 20);
 }
 
+function predictSlugFromHistoryTime(value: number): string | null {
+  const seconds = value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return `${TARGET_SLUG}-${Math.floor(seconds / 300) * 300}`;
+}
+
 /** 逐腿 → 逐局。`winner` 取 `outcomeWinner` 为真的那条腿。 */
 function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
   const groups = new Map<string, ClosedPosition[]>();
@@ -480,9 +535,11 @@ function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
       : down?.outcomeWinner
         ? "DOWN"
         : null;
+    const at = num(up?.lastActiveTime ?? down?.lastActiveTime);
     out.push({
-      key: title,
+      key: `${title}:${at}`,
       title,
+      predictSlug: predictSlugFromHistoryTime(at),
       up: upBought,
       down: downBought,
       upAvg,
@@ -493,7 +550,7 @@ function historyRounds(rows: ClosedPosition[]): HistoryRound[] {
       pairCost: upAvg > 0 && downAvg > 0 ? upAvg + downAvg : null,
       pnl: num(up?.pnl) + num(down?.pnl),
       winner,
-      at: num(up?.lastActiveTime ?? down?.lastActiveTime),
+      at,
     });
   }
   return out.sort((a, b) => b.at - a.at);
@@ -512,6 +569,140 @@ function topOf(levels: Level[] | undefined): Level | null {
   return Number.isFinite(price) ? [price, size] : null;
 }
 
+/**
+ * 单局 5 分钟回放图：三条线分别是 UP 持仓、DOWN 持仓和当前价格。
+ * 价格线使用 UP 价格，DOWN 价格按 1-UP 换算，这样只需要一个价格轴。
+ */
+function RoundReplayChart({ rows, slug }: { rows: MatchRow[]; slug: string }) {
+  const [hovered, setHovered] = useState<ReplayPoint | null>(null);
+  const points = useMemo<ReplayPoint[]>(() => {
+    const ordered = rows.filter((row) => row.slug === slug).sort((a, b) => a.at - b.at);
+    if (ordered.length === 0) return [];
+    const slotMatch = /-(\d{10})$/.exec(slug);
+    const slotStart = slotMatch ? Number(slotMatch[1]) * 1000 : ordered[0]!.at;
+    let up = 0;
+    let down = 0;
+    const first = ordered[0]!;
+    const firstLeg = first.leg.toLowerCase().startsWith("up") ? "UP" : "DOWN";
+    const firstPrice = Math.max(0, Math.min(1, firstLeg === "UP" ? first.price : 1 - first.price));
+    const result: ReplayPoint[] = [{
+      key: "start",
+      at: slotStart,
+      elapsed: 0,
+      up: 0,
+      down: 0,
+      price: firstPrice,
+      leg: firstLeg,
+      shares: 0,
+      role: first.role,
+    }];
+    for (const row of ordered) {
+      const leg = row.leg.toLowerCase().startsWith("up") ? "UP" : "DOWN";
+      if (leg === "UP") up += row.shares;
+      else down += row.shares;
+      result.push({
+        key: `${row.at}:${row.hash}:${result.length}`,
+        at: row.at,
+        elapsed: Math.max(0, Math.min(300, (row.at - slotStart) / 1000)),
+        up,
+        down,
+        price: Math.max(0, Math.min(1, leg === "UP" ? row.price : 1 - row.price)),
+        leg,
+        shares: row.shares,
+        role: row.role,
+      });
+    }
+    return result;
+  }, [rows, slug]);
+
+  if (points.length < 2) return null;
+
+  const width = 940;
+  const height = 310;
+  const left = 52;
+  const right = 52;
+  const top = 22;
+  const bottom = 39;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const maxShares = Math.max(1, ...points.map((point) => Math.max(point.up, point.down)));
+  const x = (elapsed: number) => left + (elapsed / 300) * plotWidth;
+  const yShares = (value: number) => top + (1 - value / maxShares) * plotHeight;
+  const yPrice = (value: number) => top + (1 - value) * plotHeight;
+  const upLine = points.map((point) => `${x(point.elapsed).toFixed(2)},${yShares(point.up).toFixed(2)}`).join(" ");
+  const downLine = points.map((point) => `${x(point.elapsed).toFixed(2)},${yShares(point.down).toFixed(2)}`).join(" ");
+  const priceLine = points.map((point) => `${x(point.elapsed).toFixed(2)},${yPrice(point.price).toFixed(2)}`).join(" ");
+  const last = points[points.length - 1]!;
+  const ticks = [0, 60, 120, 180, 240, 300];
+  const formatElapsed = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, "0")}`;
+  const formatPrice = (value: number) => value.toFixed(3);
+
+  return (
+    <div className="round-replay" aria-label="单局五分钟持仓和价格回放">
+      <div className="round-replay-head">
+        <div>
+          <strong>5 分钟回放</strong>
+          <span className="small">三条线：累计持仓 + 当前价格</span>
+        </div>
+        <div className="round-replay-legend" aria-label="图例">
+          <span><i className="replay-dot up" />UP 持仓</span>
+          <span><i className="replay-dot down" />DOWN 持仓</span>
+          <span><i className="replay-dot price" />当前价格</span>
+        </div>
+      </div>
+      <div className="round-replay-chart-wrap">
+        <svg className="round-replay-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="UP 持仓、DOWN 持仓和当前价格的五分钟变化">
+          <g className="replay-grid">
+            {[0, 0.25, 0.5, 0.75, 1].map((fraction) => {
+              const yPos = top + fraction * plotHeight;
+              return <line key={fraction} x1={left} x2={width - right} y1={yPos} y2={yPos} />;
+            })}
+            {ticks.map((tick) => <line key={tick} x1={x(tick)} x2={x(tick)} y1={top} y2={height - bottom} />)}
+          </g>
+          <polyline className="replay-line up" points={upLine} />
+          <polyline className="replay-line down" points={downLine} />
+          <polyline className="replay-line price" points={priceLine} />
+          {points.slice(1).map((point) => (
+            <g key={point.key} onMouseEnter={() => setHovered(point)} onFocus={() => setHovered(point)} tabIndex={0}>
+              <circle className={`replay-event ${point.leg.toLowerCase()}`} cx={x(point.elapsed)} cy={yShares(point.leg === "UP" ? point.up : point.down)} r={2.8} />
+              <circle className="replay-price-event" cx={x(point.elapsed)} cy={yPrice(point.price)} r={2.3} />
+              <title>{`${formatElapsed(point.elapsed)} · ${point.leg} ${formatShares(point.shares)} 股 · 价格 ${formatPrice(point.price)} · 持仓 ${formatShares(point.up)} / ${formatShares(point.down)}`}</title>
+            </g>
+          ))}
+          <g className="replay-axis-labels">
+            <text x={left - 9} y={top + 4} textAnchor="end">{formatShares(maxShares)}</text>
+            <text x={left - 9} y={height - bottom + 4} textAnchor="end">0</text>
+            <text x={width - right + 9} y={top + 4}>1.00</text>
+            <text x={width - right + 9} y={top + plotHeight / 2 + 4}>0.50</text>
+            <text x={width - right + 9} y={height - bottom + 4}>0.00</text>
+            {ticks.map((tick) => <text key={tick} x={x(tick)} y={height - 10} textAnchor="middle">{formatElapsed(tick)}</text>)}
+          </g>
+        </svg>
+        <span className="replay-axis-title left">持仓（股）</span>
+        <span className="replay-axis-title right">价格（UP，DOWN=1-UP）</span>
+      </div>
+      <div className="round-replay-detail" aria-live="polite">
+        {hovered ? (
+          <>
+            <span className="mono">{formatElapsed(hovered.elapsed)}</span>
+            <span className={hovered.leg === "UP" ? "positive" : "negative"}>{hovered.leg} 成交 {formatShares(hovered.shares)} 股</span>
+            <span>价格 <b>{formatPrice(hovered.price)}</b></span>
+            <span>持仓 <b>{formatShares(hovered.up)} / {formatShares(hovered.down)}</b></span>
+            <span>{hovered.role === "MAKER" ? "挂单" : "吃单"}</span>
+          </>
+        ) : (
+          <span>悬停图上的成交点查看该时刻的成交和累计持仓 · 当前价格线按成交价重建</span>
+        )}
+      </div>
+      <div className="round-replay-summary">
+        <span>结束持仓 <b>{formatShares(last.up)} / {formatShares(last.down)}</b></span>
+        <span>结束价格 <b>{formatPrice(last.price)}</b></span>
+        <span>成交点 <b>{points.length - 1}</b></span>
+      </div>
+    </div>
+  );
+}
+
 export function LeaderboardPage() {
   // 他的持仓（REST，5 秒）
   const [positions, setPositions] = useState<PredictPosition[]>([]);
@@ -521,6 +712,7 @@ export function LeaderboardPage() {
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [matchView, setMatchView] = useState<"paired" | "raw">("paired");
   const [selectedRound, setSelectedRound] = useState<string | null>(null);
+  const [selectedHistoryKey, setSelectedHistoryKey] = useState("");
   const [fullRoundMatches, setFullRoundMatches] = useState<MatchRow[]>([]);
   const [fullRoundBusy, setFullRoundBusy] = useState(false);
   const [fullRoundError, setFullRoundError] = useState<string | null>(null);
@@ -625,30 +817,30 @@ export function LeaderboardPage() {
   const loadFullRound = useCallback(async (group: PairGroup) => {
     if (fullRoundBusy) return;
     setSelectedRound(group.key);
+    setSelectedHistoryKey("");
     setFullRoundBusy(true);
     setFullRoundError(null);
     setFullRoundMatches([]);
     try {
-      const collected: MatchRow[] = [];
-      const seenCursors = new Set<string>();
-      let cursor: string | null = null;
-      for (let page = 0; page < FULL_MATCHES_PAGES; page += 1) {
-        const query = new URLSearchParams({
-          signerAddress: WALLET_ADDRESS,
-          first: String(MATCHES_LIMIT),
-          marketId: String(group.marketId),
-        });
-        if (cursor) query.set("after", cursor);
-        const response = await fetch(`${MATCHES_URL}?${query.toString()}`, { cache: "no-store" });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const payload = (await response.json()) as { cursor?: string };
-        collected.push(...parseMatches(payload).filter((row) => row.slug === group.slug));
-        const nextCursor = payload.cursor ?? null;
-        if (!nextCursor || seenCursors.has(nextCursor)) break;
-        seenCursors.add(nextCursor);
-        cursor = nextCursor;
-      }
-      setFullRoundMatches(collected);
+      setFullRoundMatches(await fetchCompleteRoundMatches(group.slug, group.marketId));
+    } catch (cause) {
+      setFullRoundMatches([]);
+      setFullRoundError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setFullRoundBusy(false);
+    }
+  }, [fullRoundBusy]);
+
+  const loadHistoricalRound = useCallback(async (row: HistoryRound) => {
+    if (fullRoundBusy || !row.predictSlug) return;
+    setSelectedHistoryKey(row.key);
+    setSelectedRound(row.predictSlug);
+    setFullRoundBusy(true);
+    setFullRoundError(null);
+    setFullRoundMatches([]);
+    try {
+      const marketId = await resolvePredictMarketId(row.predictSlug);
+      setFullRoundMatches(await fetchCompleteRoundMatches(row.predictSlug, marketId));
     } catch (cause) {
       setFullRoundMatches([]);
       setFullRoundError(cause instanceof Error ? cause.message : String(cause));
@@ -887,6 +1079,14 @@ export function LeaderboardPage() {
     [selectedRound, fullRoundMatches],
   );
   const viewMatches = selectedRound && fullRoundMatches.length > 0 ? fullRoundMatches : matches;
+  const displayPairGroups = useMemo(() => {
+    if (!fullRoundGroup) return pairGroups;
+    const existing = pairGroups.some((group) => group.key === fullRoundGroup.key);
+    return existing
+      ? pairGroups.map((group) => (group.key === fullRoundGroup.key ? fullRoundGroup : group))
+      : [fullRoundGroup, ...pairGroups];
+  }, [fullRoundGroup, pairGroups]);
+  const analysisGroups = selectedRound && fullRoundGroup ? [fullRoundGroup] : pairGroups;
 
   const matchStats = useMemo(() => {
     const buy = viewMatches.filter((row) => row.side.toLowerCase() === "bid");
@@ -900,9 +1100,9 @@ export function LeaderboardPage() {
     };
   }, [viewMatches]);
   const pairStats = useMemo(() => {
-    const pairedShares = pairGroups.reduce((sum, group) => sum + group.pairedShares, 0);
-    const naked = pairGroups.reduce((sum, group) => sum + group.naked, 0);
-    const pairCostValue = pairGroups.reduce(
+    const pairedShares = analysisGroups.reduce((sum, group) => sum + group.pairedShares, 0);
+    const naked = analysisGroups.reduce((sum, group) => sum + group.naked, 0);
+    const pairCostValue = analysisGroups.reduce(
       (sum, group) => sum + (group.pairCost ?? 0) * group.pairedShares,
       0,
     );
@@ -912,7 +1112,7 @@ export function LeaderboardPage() {
       naked,
       pairCost: pairedShares > 0 ? pairCostValue / pairedShares : null,
     };
-  }, [pairGroups]);
+  }, [analysisGroups]);
 
   const bookRows = useMemo(
     () =>
@@ -1158,6 +1358,32 @@ export function LeaderboardPage() {
               <span className="small">
               挂单占 {(matchStats.makerShare * 100).toFixed(0)}% · 笔均 {formatShares(matchStats.avgSize)} 股
             </span>
+            <label className="history-round-picker">
+              <span>历史轮次</span>
+              <select
+                value={selectedHistoryKey}
+                disabled={fullRoundBusy || history.length === 0}
+                onChange={(event) => {
+                  const key = event.currentTarget.value;
+                  if (!key) {
+                    setSelectedHistoryKey("");
+                    setSelectedRound(null);
+                    setFullRoundMatches([]);
+                    setFullRoundError(null);
+                    return;
+                  }
+                  const row = history.find((item) => item.key === key);
+                  if (row) void loadHistoricalRound(row);
+                }}
+              >
+                <option value="">选择一局历史成交…</option>
+                {history.filter((row) => row.predictSlug).map((row) => (
+                  <option key={row.key} value={row.key}>
+                    {row.title.replace(/^Bitcoin Up or Down - /, "").slice(0, 42)}
+                  </option>
+                ))}
+              </select>
+            </label>
             <div className="match-switch" role="group" aria-label="成交展示方式">
               <button type="button" className={matchView === "paired" ? "active" : ""} onClick={() => setMatchView("paired")}>
                 配对分析
@@ -1169,7 +1395,7 @@ export function LeaderboardPage() {
           </div>
         }
       >
-        {matches.length === 0 ? (
+        {viewMatches.length === 0 ? (
           <div className="small" style={{ padding: 16 }}>等待成交记录…</div>
         ) : matchView === "paired" ? (
           <div className="pair-analysis">
@@ -1183,7 +1409,7 @@ export function LeaderboardPage() {
               配对分析按同一 BTC 5m 轮次、时间先后 FIFO 估算；它能看出涨跌数量如何抵消，但成交接口没有提供钱包真实的配对意图。
             </p>
             <div className="pair-groups">
-              {pairGroups.map((group) => {
+              {displayPairGroups.map((group) => {
                 const showingFull = selectedRound === group.key && fullRoundGroup !== null;
                 const displayGroup = showingFull ? fullRoundGroup : group;
                 const displayPairs = showingFull ? displayGroup.pairs : displayGroup.pairs.slice(0, 80);
@@ -1207,6 +1433,7 @@ export function LeaderboardPage() {
                     </div>
                   </header>
                   {selectedRound === group.key && fullRoundError && <div className="pair-load-error">完整成交查询失败：{fullRoundError}</div>}
+                  {showingFull && <RoundReplayChart rows={fullRoundMatches} slug={displayGroup.slug} />}
                   <div className="pair-column-head">
                     <span>涨 UP 成交</span>
                     <span>FIFO 配对</span>

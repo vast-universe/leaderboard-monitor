@@ -175,6 +175,9 @@
   gap: 14px;
   flex-wrap: wrap;
 }
+.history-round-picker { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 10px; }
+.history-round-picker select { max-width: 220px; border: 1px solid var(--border); border-radius: 5px; padding: 5px 7px; color: var(--foreground); background: #19191f; font-size: 10px; }
+.history-round-picker select:disabled { opacity: 0.55; }
 .match-switch {
   display: inline-flex;
   padding: 2px;
@@ -247,8 +250,63 @@
 .pair-residual.down { justify-content: flex-end; background: #f37b8c0b; }
 .pair-residual > span:last-child { color: var(--muted); }
 .pair-more { padding: 8px 12px; color: var(--muted); font-size: 10px; text-align: center; border-top: 1px solid #202027; }
+
+/* 单局 5 分钟回放：左轴是两条持仓线，右轴是 UP 当前价格线。 */
+.round-replay {
+  margin: 10px 12px 14px;
+  padding: 12px 12px 10px;
+  border: 1px solid #292930;
+  border-radius: 8px;
+  background: #0c0c10;
+}
+.round-replay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 7px;
+}
+.round-replay-head > div:first-child { display: grid; gap: 3px; }
+.round-replay-legend { display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 10px; white-space: nowrap; }
+.round-replay-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.replay-dot { display: inline-block; width: 9px; height: 3px; border-radius: 3px; }
+.replay-dot.up { background: var(--green); }
+.replay-dot.down { background: var(--red); }
+.replay-dot.price { background: var(--yellow); }
+.round-replay-chart-wrap { position: relative; min-width: 0; }
+.round-replay-chart { display: block; width: 100%; height: auto; min-height: 230px; overflow: visible; }
+.replay-grid line { stroke: #ffffff0d; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.replay-grid line:nth-child(-n + 5) { stroke-dasharray: 3 4; }
+.replay-line { fill: none; stroke-width: 2.2; vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round; }
+.replay-line.up { stroke: var(--green); }
+.replay-line.down { stroke: var(--red); }
+.replay-line.price { stroke: var(--yellow); stroke-dasharray: 5 4; }
+.replay-event { stroke: #0c0c10; stroke-width: 1; vector-effect: non-scaling-stroke; }
+.replay-event.up { fill: var(--green); }
+.replay-event.down { fill: var(--red); }
+.replay-price-event { fill: var(--yellow); stroke: #0c0c10; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .9; }
+.replay-axis-labels { fill: #73737e; font-family: var(--font-mono); font-size: 10px; }
+.replay-axis-title { position: absolute; top: 4px; color: #73737e; font-size: 9px; pointer-events: none; }
+.replay-axis-title.left { left: 0; }
+.replay-axis-title.right { right: 0; }
+.round-replay-detail {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-height: 30px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: #141419;
+  color: var(--muted);
+  font-size: 10px;
+}
+.round-replay-detail b, .round-replay-summary b { color: var(--foreground); font-family: var(--font-mono); font-weight: 600; }
+.round-replay-summary { display: flex; align-items: center; gap: 14px; margin-top: 8px; color: var(--muted); font-size: 10px; }
 @media (max-width: 760px) {
   .match-panel-aside { width: 100%; justify-content: flex-start; }
+  .history-round-picker { width: 100%; }
+  .history-round-picker select { flex: 1; max-width: none; min-width: 0; }
   .pair-summary-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .match-round-head { align-items: flex-start; flex-direction: column; }
   .match-round-metrics { width: 100%; justify-content: space-between; }
@@ -258,4 +316,128 @@
   .pair-fill strong { font-size: 10px; }
   .pair-fill small { font-size: 9px; }
   .pair-fill .fill-arrow { flex-basis: 18px; width: 18px; height: 18px; font-size: 12px; }
+}
+
+/* 手机：配对卡片保持「涨腿｜成本｜跌腿」三列，方便逐行对照。 */
+@media (max-width: 760px) {
+  .pair-column-head { display: none; }
+  .pair-line {
+    grid-template-columns: minmax(0, 1fr) 62px minmax(0, 1fr);
+    gap: 4px;
+    padding: 6px 7px;
+  }
+  .pair-fill { width: 100%; min-width: 0; gap: 4px; padding: 6px 5px; }
+  .pair-fill.down { justify-content: flex-end; text-align: right; }
+  .pair-fill.down > div { justify-items: end; }
+  .pair-fill strong { max-width: 100%; overflow: visible; text-overflow: clip; white-space: normal; font-size: 9px; line-height: 1.25; }
+  .pair-fill small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 8px; }
+  .pair-fill .fill-arrow { flex-basis: 17px; width: 17px; height: 17px; font-size: 11px; }
+  .pair-link {
+    min-width: 0;
+    gap: 1px;
+    padding: 0 2px;
+  }
+  .pair-link strong { font-size: 10px; }
+  .pair-link small, .pair-link span { font-size: 8px; white-space: nowrap; }
+  .pair-residual,
+  .pair-residual.down { justify-content: flex-start; flex-wrap: wrap; margin: 6px 7px 9px; }
+  .pair-residual > span:last-child { flex-basis: 100%; padding-left: 25px; }
+
+  .round-replay { margin: 8px 7px 11px; padding: 10px 8px 8px; }
+  .round-replay-head { align-items: flex-start; flex-direction: column; }
+  .round-replay-legend { width: 100%; justify-content: space-between; gap: 4px; font-size: 9px; }
+  .round-replay-chart { min-height: 190px; }
+  .round-replay-detail { gap: 6px 9px; line-height: 1.35; }
+  .round-replay-summary { justify-content: space-between; gap: 5px; font-size: 9px; }
+}
+
+@media (max-width: 560px) {
+  .workspace-page { gap: 16px; padding: 18px 12px 42px; }
+  .panel { padding: 14px; border-radius: 10px; }
+  .panel-title { align-items: flex-start; flex-direction: column; padding-bottom: 13px; }
+  .panel-title > :last-child { width: 100%; }
+  .page-title { flex-direction: column; gap: 12px; }
+  .page-title-content p { max-width: none; font-size: 11px; }
+  .leaderboard-meta { gap: 7px; padding: 10px 11px; }
+  .leaderboard-meta .small { flex-basis: 100%; }
+  .leaderboard-metrics { gap: 7px; }
+  .leaderboard-metrics .metric { padding: 12px 10px; }
+  .metric-value { font-size: 20px; }
+
+  .pair-summary-strip > span { padding: 10px; }
+  .pair-summary-strip strong { font-size: 14px; }
+  .match-round-head { gap: 9px; padding: 11px; }
+  .match-round-metrics { gap: 6px; font-size: 10px; }
+  .match-round-tools button { flex: 1; }
+  .pair-note { font-size: 10px; }
+
+  /* 原始逐笔在手机上变成三列摘要 + 一行订单哈希。 */
+  .ws-trades { gap: 7px; padding: 7px; background: #0e0e12; }
+  .ws-trades .ws-trade.head { display: none; }
+  .ws-trades .ws-trade:not(.head) {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas:
+      "time leg price"
+      "market qty role"
+      "order order order";
+    gap: 6px 8px;
+    padding: 9px;
+    border: 1px solid #25252c;
+    border-radius: 7px;
+    background: #121217;
+  }
+  .ws-trades .ws-trade:not(.head) > :nth-child(1) { grid-area: time; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(2) { grid-area: market; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(3) { grid-area: leg; justify-self: end; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(4) { grid-area: price; justify-self: end; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(5) { grid-area: qty; justify-self: end; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(6) { grid-area: role; justify-self: end; }
+  .ws-trades .ws-trade:not(.head) > :nth-child(7) { grid-area: order; overflow: hidden; color: var(--muted); font-size: 9px; }
+
+  /* 持仓/历史表改成带字段标签的双列卡片，避免横向拖表。 */
+  .ws-monitor.holdings { gap: 8px; }
+  .ws-monitor.holdings .ws-monitor-row.head { display: none; }
+  .ws-monitor.holdings .ws-monitor-row:not(.head) {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px 12px;
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid #25252c;
+    border-radius: 8px;
+    background: #121217;
+  }
+  .ws-monitor.holdings .ws-monitor-row:not(.head) > span {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    min-width: 0;
+    gap: 6px;
+  }
+  .ws-monitor.holdings .ws-monitor-row:not(.head) > span::before {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 9px;
+  }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(1)::before { content: "市场"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(2)::before { content: "状态"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(3)::before { content: "UP"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(4)::before { content: "DOWN"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(5)::before { content: "偏重"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "配对"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "裸敞口"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "成本"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(9)::before { content: "盈亏"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(1)::before { content: "时间"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(2)::before { content: "UP 均价"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(3)::before { content: "DOWN 均价"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(4)::before { content: "结果"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(5)::before { content: "配对"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(6)::before { content: "裸敞口"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(7)::before { content: "成本"; }
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(8)::before { content: "盈亏"; }
+  .ws-monitor[aria-label="他的持仓"] .ws-monitor-row:not(.head) > :nth-child(9),
+  .ws-monitor[aria-label="历史真实表现"] .ws-monitor-row:not(.head) > :nth-child(8) { grid-column: 1 / -1; }
+
+  .ws-monitor:not(.holdings) { overflow-x: auto; }
+  .ws-monitor:not(.holdings) .ws-monitor-row { min-width: 600px; }
 }
